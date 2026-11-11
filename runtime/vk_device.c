@@ -21,6 +21,7 @@
 PFN_vkGetDeviceProcAddr vk_dpa = vkGetDeviceProcAddr;
 
 static uint32_t g_gfx_queues = 1;   // queues the graphics family offers (pick_device)
+static uint32_t g_fg_family = UINT32_MAX, g_fg_avail = 0;   // secondary presentable family when gfx has < 3 queues
 
 static VkCtx g_vk;
 static int g_ready;
@@ -277,6 +278,25 @@ retry:
             g_vk.xfer_family = i;
             break;
         }
+    // Single-graphics-queue drivers (Mesa RADV) still expose multiple presentable compute+transfer queues; use
+    // them for FSR 3.1 frame generation's present + acquire queues (FidelityFX composes on gameQueue cleanly).
+    g_fg_family = UINT32_MAX, g_fg_avail = 0;
+    if (g_gfx_queues < vk_fg_queue_count()) {
+        uint32_t need = g_gfx_queues >= 2 ? 1 : 2;
+        for (int pass = 0; pass < 2 && g_fg_family == UINT32_MAX; pass++) {
+            VkQueueFlags want_flag = pass == 0 ? VK_QUEUE_COMPUTE_BIT : VK_QUEUE_TRANSFER_BIT;
+            for (uint32_t i = 0; i < nq; i++) {
+                if (i == g_vk.gfx_family) continue;
+                uint32_t reserved = (i == g_vk.xfer_family) ? 1 : 0;
+                if ((qp[i].queueFlags & want_flag) && qp[i].queueCount >= reserved + need &&
+                    gfx_window_vk_presentable(g_vk.instance, g_vk.phys, i)) {
+                    g_fg_family = i;
+                    g_fg_avail = qp[i].queueCount - reserved;
+                    break;
+                }
+            }
+        }
+    }
     free(qp);
     rt_log("vk: using gpu %d: %s", best, g_vk.props.deviceName);
     vk_caps_driver(g_vk.phys);   // before vk_mem_class_log, which chooses the pools' storage by driver
@@ -490,17 +510,26 @@ static int create_device(void) {
                has_fbl && c->fbl.attachmentFeedbackLoopLayout, has_lr && c->lr.dynamicRenderingLocalRead);
     }
 
-    // Frame generation (vk_fg.cpp) presents on a second queue of the graphics family and acquires on a third
-    static const float prio[3] = {1.0f, 1.0f, 1.0f};
-    uint32_t nq_gfx = vk_fg_queue_count() < g_gfx_queues ? vk_fg_queue_count() : g_gfx_queues;
-    VkDeviceQueueCreateInfo qi[2] = {
+    // Frame generation (vk_fg.cpp) needs distinct present and acquire queues; take them from gfx_family when it
+    // offers >= 3 queues, or fall back to a presentable secondary family (RADV compute+transfer) otherwise.
+    static const float prio[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    uint32_t nq_gfx = 1, nq_fg = 0;
+    if (g_gfx_queues >= vk_fg_queue_count()) nq_gfx = vk_fg_queue_count();
+    else if (g_gfx_queues == 2 && g_fg_family != UINT32_MAX && g_fg_avail >= 1) nq_gfx = 2, nq_fg = 1;
+    else if (g_fg_family != UINT32_MAX && g_fg_avail >= 2) nq_gfx = 1, nq_fg = 2;
+    else if (g_gfx_queues >= 2) nq_gfx = 2;
+    VkDeviceQueueCreateInfo qi[3] = {
         {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.gfx_family, .queueCount = nq_gfx,
          .pQueuePriorities = prio}};
     uint32_t nqi = 1;
     if (g_vk.xfer_family != g_vk.gfx_family) {
-        qi[1] = (VkDeviceQueueCreateInfo){.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-                                          .queueFamilyIndex = g_vk.xfer_family, .queueCount = 1, .pQueuePriorities = prio};
-        nqi = 2;
+        uint32_t xq = 1 + (g_fg_family == g_vk.xfer_family ? nq_fg : 0);
+        qi[nqi++] = (VkDeviceQueueCreateInfo){.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                                              .queueFamilyIndex = g_vk.xfer_family, .queueCount = xq, .pQueuePriorities = prio};
+    }
+    if (nq_fg > 0 && g_fg_family != g_vk.gfx_family && g_fg_family != g_vk.xfer_family) {
+        qi[nqi++] = (VkDeviceQueueCreateInfo){.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                                              .queueFamilyIndex = g_fg_family, .queueCount = nq_fg, .pQueuePriorities = prio};
     }
     VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &c->f2, .queueCreateInfoCount = nqi,
                              .pQueueCreateInfos = qi, .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext};
@@ -513,11 +542,30 @@ static int create_device(void) {
         rt_log("vk: device entry points come through Streamline's interposer (DLSS Frame Generation)");
     }
     vkGetDeviceQueue(g_vk.device, g_vk.gfx_family, 0, &g_vk.gfx_queue);
-    if (nq_gfx >= 2) {
+    if (nq_gfx >= 3) {
         VkQueue present, acquire;
         vkGetDeviceQueue(g_vk.device, g_vk.gfx_family, 1, &present);
-        vkGetDeviceQueue(g_vk.device, g_vk.gfx_family, nq_gfx - 1, &acquire);
-        vk_fg_queues(present, acquire);
+        vkGetDeviceQueue(g_vk.device, g_vk.gfx_family, 2, &acquire);
+        vk_fg_queues(present, g_vk.gfx_family, acquire, g_vk.gfx_family);
+        rt_log("vk: fg queues: present/acquire on gfx family %u", g_vk.gfx_family);
+    } else if (nq_gfx == 2 && nq_fg == 1) {
+        VkQueue present, acquire;
+        uint32_t base = (g_fg_family == g_vk.xfer_family) ? 1 : 0;
+        vkGetDeviceQueue(g_vk.device, g_vk.gfx_family, 1, &present);
+        vkGetDeviceQueue(g_vk.device, g_fg_family, base, &acquire);
+        vk_fg_queues(present, g_vk.gfx_family, acquire, g_fg_family);
+        rt_log("vk: fg queues: present fam %u, acquire fam %u", g_vk.gfx_family, g_fg_family);
+    } else if (nq_fg >= 2) {
+        VkQueue present, acquire;
+        uint32_t base = (g_fg_family == g_vk.xfer_family) ? 1 : 0;
+        vkGetDeviceQueue(g_vk.device, g_fg_family, base, &present);
+        vkGetDeviceQueue(g_vk.device, g_fg_family, base + 1, &acquire);
+        vk_fg_queues(present, g_fg_family, acquire, g_fg_family);
+        rt_log("vk: fg queues: present/acquire on secondary family %u", g_fg_family);
+    } else if (nq_gfx >= 2) {
+        VkQueue q;
+        vkGetDeviceQueue(g_vk.device, g_vk.gfx_family, 1, &q);
+        vk_fg_queues(q, g_vk.gfx_family, q, g_vk.gfx_family);
     }
     if (g_vk.xfer_family != g_vk.gfx_family) vkGetDeviceQueue(g_vk.device, g_vk.xfer_family, 0, &g_vk.xfer_queue);
     else { g_vk.xfer_queue = g_vk.gfx_queue; g_vk.xfer_shared = 1; }

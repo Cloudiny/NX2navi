@@ -35,6 +35,7 @@ namespace {
 
 struct {
     VkQueue present = VK_NULL_HANDLE, acquire = VK_NULL_HANDLE;
+    uint32_t present_family = 0, acquire_family = 0;
     ffxContext sc = nullptr;   // the swapchain context
     ffxContext fg = nullptr;   // the frame generation context
     VkExtent2D fg_ext = {0, 0};
@@ -112,9 +113,10 @@ extern "C" int vk_fg_wanted(void) {
 // Always the three queues: the setting can be switched on during a run, and idle queues cost nothing.
 extern "C" uint32_t vk_fg_queue_count(void) { return 3; }
 
-extern "C" void vk_fg_queues(VkQueue present, VkQueue acquire) {
-    F.present = present, F.acquire = acquire;
-    vk_fg4_queues(present, acquire);
+extern "C" void vk_fg_queues(VkQueue present, uint32_t present_family, VkQueue acquire, uint32_t acquire_family) {
+    F.present = present, F.present_family = present_family;
+    F.acquire = acquire, F.acquire_family = acquire_family;
+    vk_fg4_queues(present, present_family, acquire, acquire_family);
 }
 
 // AMD's swapchain is in place: the window's swapchain handle is AMD's object, and every swapchain call has to go
@@ -147,8 +149,8 @@ extern "C" VkResult vk_fg_create_swapchain(const VkSwapchainCreateInfoKHR *ci, V
     d.createInfo.oldSwapchain = VK_NULL_HANDLE;
     d.gameQueue = {c->gfx_queue, c->gfx_family, submit_game};
     d.asyncComputeQueue = {VK_NULL_HANDLE, c->gfx_family, nullptr};
-    d.presentQueue = {F.present, c->gfx_family, nullptr};
-    d.imageAcquireQueue = {F.acquire, c->gfx_family, nullptr};
+    d.presentQueue = {F.present, F.present_family, nullptr};
+    d.imageAcquireQueue = {F.acquire, F.acquire_family, nullptr};
     ffxReturnCode_t r = vk_ffx_create(&F.sc, &d.header);
     if (r != FFX_API_RETURN_OK) {
         F.sc = nullptr;

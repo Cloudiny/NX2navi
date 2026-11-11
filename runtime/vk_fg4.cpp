@@ -28,7 +28,7 @@ extern "C" int vk_fg4_failed(void) { return 0; }
 extern "C" const char *vk_fg4_name(void) { return ""; }
 extern "C" int vk_fg4_active(void) { return 0; }
 extern "C" int vk_fg4_generating(void) { return 0; }
-extern "C" void vk_fg4_queues(VkQueue, VkQueue) {}
+extern "C" void vk_fg4_queues(VkQueue, uint32_t, VkQueue, uint32_t) {}
 extern "C" VkResult vk_fg4_create_swapchain(const VkSwapchainCreateInfoKHR *, VkSwapchainKHR *) {
     return VK_ERROR_FEATURE_NOT_PRESENT;
 }
@@ -68,6 +68,7 @@ namespace {
 
 struct {
     VkQueue present = VK_NULL_HANDLE, acquire = VK_NULL_HANDLE;
+    uint32_t present_family = 0, acquire_family = 0;
     ffxContext sc = nullptr;   // the swapchain context
     ffxContext fg = nullptr;   // the frame generation context
     VkSwapchainKHR handle = VK_NULL_HANDLE;   // the swapchain the context made: remade in place, destroyed after the context
@@ -200,7 +201,10 @@ extern "C" int vk_fg4_failed(void) { return F.failed; }
 
 extern "C" const char *vk_fg4_name(void) { return g_fg_name; }
 
-extern "C" void vk_fg4_queues(VkQueue present, VkQueue acquire) { F.present = present, F.acquire = acquire; }
+extern "C" void vk_fg4_queues(VkQueue present, uint32_t present_family, VkQueue acquire, uint32_t acquire_family) {
+    F.present = present, F.present_family = present_family;
+    F.acquire = acquire, F.acquire_family = acquire_family;
+}
 
 // The SDK's swapchain is in place: the window's swapchain handle is its object, and every swapchain call has to go
 // through its functions, after a failure too, until the present code has taken it down.
@@ -230,8 +234,8 @@ extern "C" VkResult vk_fg4_create_swapchain(const VkSwapchainCreateInfoKHR *ci, 
     F.sc_desc.createInfo.oldSwapchain = VK_NULL_HANDLE;
     F.sc_desc.gameQueue = {c->gfx_queue, c->gfx_family, submit_game};
     F.sc_desc.asyncComputeQueue = {VK_NULL_HANDLE, c->gfx_family, nullptr};
-    F.sc_desc.presentQueue = {F.present, c->gfx_family, nullptr};
-    F.sc_desc.imageAcquireQueue = {F.acquire, c->gfx_family, nullptr};
+    F.sc_desc.presentQueue = {F.present, F.present_family, nullptr};
+    F.sc_desc.imageAcquireQueue = {F.acquire, F.acquire_family, nullptr};
     // the version this code was built against, which the SDK asks for with every context, and a test's version
     F.sc_ver = {};
     F.sc_ver.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_VERSION_VK;
