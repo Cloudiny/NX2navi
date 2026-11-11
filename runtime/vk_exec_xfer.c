@@ -192,7 +192,7 @@ static Pending *pending_slot(uint64_t addr, int insert) {
 // report into guest memory. Slots come from one ring; the completion thread reads and host-resets them
 // (hostQueryReset, Vulkan 1.2), so the replay records no reset commands. A full ring (no slot read back yet) leaves the
 // draw uncounted and the segment's count at least 1, as does a query still unavailable after its fence. Without hostQueryReset the counts stay 0.
-#define OQ_N 4096
+#define OQ_N 8192
 #define LOG_ONCE(...) do { static volatile char once_; if (!__atomic_exchange_n(&once_, 1, __ATOMIC_RELAXED)) rt_log(__VA_ARGS__); } while (0)
 static VkQueryPool oq_pool;
 static int oq_state;                     // 0 not set up, 1 counting available, -1 unavailable
