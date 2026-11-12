@@ -470,7 +470,20 @@ static void open_window(void *arg) {
     MonInfo mon;
     int on_mon = chosen_monitor(&mon, 1);
     SDL_PropertiesID props = SDL_CreateProperties();
-    SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, "NX2navi");
+    const char *user_title = cfg_get("NX2NAVI_WINDOW_TITLE");
+    if (user_title && *user_title) {
+        SDL_SetHint(SDL_HINT_APP_NAME, user_title);
+    } else {
+        user_title = "NX2navi";
+    }
+#if defined(__linux__)
+    const char *wm_class = cfg_get("NX2NAVI_WINDOW_CLASS");
+    if (wm_class && *wm_class) {
+        SDL_SetHint("SDL_VIDEO_WAYLAND_WMCLASS", wm_class);
+        SDL_SetHint("SDL_VIDEO_X11_WMCLASS", wm_class);
+    }
+#endif
+    SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, user_title);
     SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, w);
     SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, h);
     SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_VULKAN_BOOLEAN, true);
@@ -485,6 +498,29 @@ static void open_window(void *arg) {
     if (!g_win) {
         rt_log("gfx: SDL_CreateWindow failed (%s)", SDL_GetError());
         return;
+    }
+    SDL_Surface *icon = NULL;
+    const char *icon_env = cfg_get("NX2NAVI_WINDOW_ICON");
+    if (icon_env && *icon_env) icon = SDL_LoadBMP(icon_env);
+    if (!icon) {
+        const char *base = SDL_GetBasePath();
+        if (base) {
+            char pbuf[1024];
+            snprintf(pbuf, sizeof pbuf, "%snx2navi.bmp", base);
+            icon = SDL_LoadBMP(pbuf);
+        }
+    }
+    if (!icon) {
+        const char *appdir = getenv("APPDIR");
+        if (appdir && *appdir) {
+            char pbuf[1024];
+            snprintf(pbuf, sizeof pbuf, "%s/nx2navi.bmp", appdir);
+            icon = SDL_LoadBMP(pbuf);
+        }
+    }
+    if (icon) {
+        SDL_SetWindowIcon(g_win, icon);
+        SDL_DestroySurface(icon);
     }
     set_pixel_size(w, h);   // w x h were window units; the setting is in pixels
     // Centred again at the size it ended up with. SDL also takes this position as the display the fullscreen below
