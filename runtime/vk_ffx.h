@@ -15,18 +15,20 @@ typedef struct {
 // 1.
 typedef struct { float fov_y, znear, zfar, meters; } VkFfxCamera;
 
-int vk_ffx_load(void);   // 1 when the library is there with its entry points (loaded once)
-// Whether FSR 3.1 upscaling can run in this build, for the settings menu: after vk_ffx_load ran, what it found; before,
-// whether the library file is there, asked once without loading it. 0 where the build has no FSR 3.1 to load.
+int vk_ffx_load(void);        // 1 when the library is there with its entry points (loaded once)
+int vk_ffx_load_fsr4(void);   // 1 when amd_fidelityfx_upscaler_vk.so (FSR 4 on Linux) is loaded and descriptorBuffer is on
+// Whether FSR 3.1 / Linux FSR 4 upscaling can run in this build, for the settings menu: after load ran, what it found;
+// before, whether the library file is there, asked once without loading it. 0 where the build has no FSR to load.
 int vk_ffx_available(void);
+int vk_ffx_fsr4_available(void);
 // The same for frame generation (vk_fg.cpp), which runs through the library's own API calls (vk_ffx_create and the
 // rest below), not only an upscaler.
 int vk_ffx_framegen_available(void);
-// Records FSR 3.1 into cb: color (the scene light, render size), depth (D32F), mv (R16G16F, render pixels, current to
-// previous), out (the output size, RGBA16F, storage). jx, jy: the jitter the scene took, render pixels. cam: the
-// frame's camera. 0 on failure (the caller falls back as it does when DLSS fails).
+// Records FSR 3.1 or Linux FSR 4 (fsr4 != 0) into cb: color (the scene light, render size), depth (D32F), mv
+// (R16G16F, render pixels, current to previous), out (the output size, RGBA16F, storage). jx, jy: the jitter the scene
+// took, render pixels. cam: the frame's camera. 0 on failure (the caller falls back as it does when DLSS fails).
 int vk_ffx_upscale(VkCommandBuffer cb, const VkFfxImage *color, const VkFfxImage *depth, const VkFfxImage *mv,
-                   const VkFfxImage *out, float jx, float jy, int reset, float dt_ms, const VkFfxCamera *cam);
+                   const VkFfxImage *out, float jx, float jy, int reset, float dt_ms, const VkFfxCamera *cam, int fsr4);
 void vk_ffx_release(void);   // before the device goes away
 // FSR 3.1's contexts that no upscale used in the last `recent` calls, destroyed with the device idle (the caller waited
 // for it): room for an FSR 4 context whose creation failed. Their count.

@@ -103,6 +103,9 @@ static struct {
     int failed, reset, evals;
 } FG;
 
+static int taa_is_fsr4(void) { return !strcmp(cfg_value("NX2NAVI_TAA"), "fsr4"); }
+static int taa_is_fsr(void) { return !strcmp(cfg_value("NX2NAVI_TAA"), "fsr3") || taa_is_fsr4(); }
+
 // Whether this run can generate frames through NGX: DLSS upscaling on at the start, as NGX comes up only then. The
 // swapchain then gets the presenter's extra images and NGX is asked about frame generation; whether frames are
 // generated is NX2NAVI_FRAMEGEN = dlss, read live (vk_ngxfg_on).
@@ -111,7 +114,7 @@ int vk_ngxfg_wanted(void) {
     return 0;   // Streamline's path there (vk_dlssg.c)
 #else
     static int w = -1;
-    if (w < 0) w = cfg_bool("NX2NAVI_DLAA") && strcmp(cfg_value("NX2NAVI_TAA"), "fsr3");
+    if (w < 0) w = cfg_bool("NX2NAVI_DLAA") && !taa_is_fsr();
     return w;
 #endif
 }
@@ -157,22 +160,24 @@ static int p_getull(const NgxParam *p, const char *n, unsigned long long *v) {
 int vk_dlaa_wanted(void) {
     static int at_start = -1;
     if (at_start < 0) at_start = cfg_bool("NX2NAVI_DLAA");
-    return at_start || (!N.ngx_up && cfg_bool("NX2NAVI_DLAA") && !strcmp(cfg_value("NX2NAVI_TAA"), "fsr3"));
+    return at_start || (!N.ngx_up && cfg_bool("NX2NAVI_DLAA") && taa_is_fsr());
 }
 
-// The temporal upscaler behind dlaa: NVIDIA DLSS through NGX, once NGX is up, or else AMD FSR 3.1, which takes the same
-// inputs. The DLSS mode setting (NX2NAVI_DLSS) is the render scale for both.
-static int fsr3(void) { return !N.ngx_up && !strcmp(cfg_value("NX2NAVI_TAA"), "fsr3"); }
+// The temporal upscaler behind dlaa: NVIDIA DLSS through NGX, once NGX is up, or else AMD FSR 3.1 / FSR 4, which take
+// the same inputs. The DLSS mode setting (NX2NAVI_DLSS) is the render scale for both.
+static int fsr3(void) { return !N.ngx_up && taa_is_fsr(); }
 static int fsr_frame;   // fsr3() as vk_dlaa_init and then vk_dlaa_frame read it: the upscaler this frame runs with
-// FSR 3.1 is the upscaler and its library loads (vk_ffx_available): widescreen.c shrinks the scene only for an upscaler
-// that runs.
-int vk_dlaa_fsr3(void) { return vk_dlaa_wanted() && fsr3() && vk_ffx_available(); }
+// FSR 3.1 / FSR 4 is the upscaler and its library loads (vk_ffx_available / vk_ffx_fsr4_available): widescreen.c
+// shrinks the scene only for an upscaler that runs.
+int vk_dlaa_fsr3(void) {
+    return vk_dlaa_wanted() && fsr3() && (taa_is_fsr4() ? vk_ffx_fsr4_available() : vk_ffx_available());
+}
 
 // The upscaler the menu has set cannot start in this run: DLSS when NGX was never tried (a device made without its
-// extensions), FSR 3.1 while NGX is up and serves the run. A DLSS this PC could not bring up is not waiting for a restart.
+// extensions), FSR while NGX is up and serves the run. A DLSS this PC could not bring up is not waiting for a restart.
 int vk_dlaa_needs_restart(void) {
     if (!cfg_bool("NX2NAVI_DLAA")) return 0;
-    return strcmp(cfg_value("NX2NAVI_TAA"), "fsr3") ? !N.ngx_up && !N.tried : N.ngx_up;
+    return !taa_is_fsr() ? !N.ngx_up && !N.tried : N.ngx_up;
 }
 
 #ifdef _WIN32
@@ -373,8 +378,10 @@ static int utf8_to_wide(const char *in, wchar_t *out, size_t cap) {
 void vk_dlaa_init(void) {
     if (vk_dlaa_wanted() && fsr3()) {
         fsr_frame = 1;
-        N.available = vk_ffx_load();
-        rt_log("dlaa: the temporal upscaler is AMD FSR 3.1%s", N.available ? "" : ", which is not available: the game's own scaling");
+        int is4 = taa_is_fsr4();
+        N.available = is4 ? vk_ffx_load_fsr4() : vk_ffx_load();
+        rt_log("dlaa: the temporal upscaler is AMD FSR %s%s", is4 ? "4" : "3.1",
+               N.available ? "" : ", which is not available: the game's own scaling");
         return;
     }
     if (!vk_dlaa_wanted() || !core_load()) return;
@@ -1940,8 +1947,10 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     rec_drain();   // NGX records into the command buffer itself: the recorder thread must have made every call so far
     if (timed) T.cpu_drain += kern_now_ns() - c0;
     if (mv == 1) fcam_probe(cb, e, w, h);   // mv_pass's distances, behind its barrier
-    if (fsr) {   // FSR 3.1 (vk_ffx.cpp) in DLSS's place: the same images, then the same blit below
-        if (t->level || t->base_layer || z->level || z->base_layer) return dl_fail("FSR 3.1 on a target that is not level 0, layer 0", 0);
+    if (fsr) {   // FSR 3.1 / FSR 4 (vk_ffx.cpp) in DLSS's place: the same images, then the same blit below
+        int is_fsr4 = taa_is_fsr4();
+        const char *label = is_fsr4 ? "FSR 4" : "FSR 3.1";
+        if (t->level || t->base_layer || z->level || z->base_layer) return dl_fail("FSR on a target that is not level 0, layer 0", 0);
         if (D.last_color != t->image) target_changed(t, mv == 1);
         uint64_t now = plat_now_ns();
         double dt = D.last_eval_ns ? (now - D.last_eval_ns) / 1e6 : 0;
@@ -1950,10 +1959,10 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
                    fm = {e->mv, VK_FORMAT_R16G16_SFLOAT, w, h, 1}, fo = {e->out, VK_FORMAT_R16G16B16A16_SFLOAT, ow, oh, 1};
         VkFfxCamera fcam;
         if (!vk_dlaa_ffx_camera(&fcam)) memset(&fcam, 0, sizeof fcam);   // no camera this frame: FSR's fixed values
-        if (!vk_ffx_upscale(cb, &fc, &fz, &fm, &fo, jx, jy, D.reset, dt > 0 && dt < 100 ? (float)dt : 16.67f, &fcam))
-            return dl_fail("FSR 3.1", 0);
+        if (!vk_ffx_upscale(cb, &fc, &fz, &fm, &fo, jx, jy, D.reset, dt > 0 && dt < 100 ? (float)dt : 16.67f, &fcam, is_fsr4))
+            return dl_fail(label, 0);
         static int told;
-        if (!told++) rt_log("dlaa: FSR 3.1 at %ux%u -> %ux%u (scene format %d, depth format %d)", w, h, ow, oh,
+        if (!told++) rt_log("dlaa: %s at %ux%u -> %ux%u (scene format %d, depth format %d)", label, w, h, ow, oh,
                             (int)t->format, (int)z->format);
         goto evaluated;
     }
@@ -2384,9 +2393,10 @@ void vk_dlaa_frame(void) {
     vk_dlaa_swap_img = NULL, vk_dlaa_swap_view = VK_NULL_HANDLE;
     dlss_mode();
     preset_check();
-    if (!N.ngx_up) {   // FSR 3.1 follows the setting
+    if (!N.ngx_up) {   // FSR 3.1 / FSR 4 follows the setting
         fsr_frame = fsr3();
-        N.available = fsr_frame && cfg_bool("NX2NAVI_DLAA") && vk_ffx_load();
+        N.available = fsr_frame && cfg_bool("NX2NAVI_DLAA") &&
+                      (taa_is_fsr4() ? vk_ffx_load_fsr4() : vk_ffx_load());
     }
     int on = N.available && cfg_bool("NX2NAVI_DLAA");
     if (on != D.on) {

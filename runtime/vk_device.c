@@ -309,6 +309,7 @@ typedef struct {
     VkPhysicalDeviceShaderMaximalReconvergenceFeaturesKHR mrc;
     VkPhysicalDeviceMaintenance5FeaturesKHR m5;
     VkPhysicalDevicePipelineBinaryFeaturesKHR pbin;
+    VkPhysicalDeviceDescriptorBufferFeaturesEXT desc_buf;
 } FeatureChain;
 
 // One line for a fatal error's report (dispatch.h rt_fatal_note_add): the card, its driver, and the settings in effect
@@ -325,7 +326,7 @@ static int create_device(void) {
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne ? ne : 1, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
-    const char *ext[64];
+    const char *ext[96];
     uint32_t n_ext = 0;
     for (size_t i = 0; i < sizeof k_required_ext / sizeof *k_required_ext; i++) ext[n_ext++] = k_required_ext[i];
 
@@ -360,6 +361,11 @@ static int create_device(void) {
     // (vk_pipeline.c spirv_reconverge)
     OPTIONAL_EXT(has_maximal_reconvergence, VK_KHR_SHADER_MAXIMAL_RECONVERGENCE_EXTENSION_NAME, mrc,
                  VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MAXIMAL_RECONVERGENCE_FEATURES_KHR);
+#ifndef _WIN32
+    // FSR 4 on Linux (vk_ffx.cpp): amd_fidelityfx_upscaler_vk.so uses descriptor buffers on Vulkan.
+    OPTIONAL_EXT(has_descriptor_buffer, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME, desc_buf,
+                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT);
+#endif
     // Compiled pipelines kept under the runtime's own keys (vk_pipeline.c pipe_create): VK_KHR_pipeline_binary, which
     // needs VK_KHR_maintenance5 (core only from Vulkan 1.4; the instance asks for 1.3). NX2NAVI_PIPE_BINARIES=0 leaves
     // both off.
@@ -395,7 +401,7 @@ static int create_device(void) {
                                                VK_KHR_BIND_MEMORY_2_EXTENSION_NAME, VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME,
                                                VK_KHR_COPY_COMMANDS_2_EXTENSION_NAME, VK_KHR_MAINTENANCE_1_EXTENSION_NAME,
                                                VK_KHR_MAINTENANCE_2_EXTENSION_NAME, VK_KHR_MAINTENANCE_3_EXTENSION_NAME};
-        for (size_t i = 0; i < sizeof promoted / sizeof *promoted && n_ext < 56; i++)
+        for (size_t i = 0; i < sizeof promoted / sizeof *promoted && n_ext < 88; i++)
             if (has_ext(ep, ne, promoted[i])) ext[n_ext++] = promoted[i];
     }
     if (has_ext(ep, ne, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) { g_vk.has_memory_budget = 1; ext[n_ext++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME; }
@@ -476,6 +482,13 @@ static int create_device(void) {
             rt_log("vk: mesh shaders: not supported and mesh_fallback = 0 (task/mesh draws are skipped)");
     }
     if (g_vk.has_maximal_reconvergence && !c->mrc.shaderMaximalReconvergence) g_vk.has_maximal_reconvergence = 0;
+#ifndef _WIN32
+    if (g_vk.has_descriptor_buffer) {
+        c->desc_buf.descriptorBufferCaptureReplay = VK_FALSE;
+        c->desc_buf.descriptorBufferPushDescriptors = VK_FALSE;
+        if (!c->desc_buf.descriptorBuffer) g_vk.has_descriptor_buffer = 0;
+    }
+#endif
     if (g_vk.has_pipeline_binary && !(c->pbin.pipelineBinaries && c->m5.maintenance5)) g_vk.has_pipeline_binary = 0;
     g_vk.has_buffer_device_address = c->f12.bufferDeviceAddress;
     g_vk.has_astc_ldr = h->textureCompressionASTC_LDR;
